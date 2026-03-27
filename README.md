@@ -393,3 +393,8 @@ High-performing models are only useful if stakeholders **trust** them. We use tw
 6. **Generalizability** — Trained exclusively on Apple and Google product tweets. Performance on tweets about other brands, industries, or topics is unknown without further evaluation.
 7. **Annotation ceiling** — The original dataset contains "I can't tell" labels, indicating that even human annotators found some tweets ambiguous. This places a natural ceiling on achievable model accuracy.
 
+## Tableau Link
+
+https://public.tableau.com/views/Book1_17611539348850/Dashboard1?:language=en-US&publish=yes&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link
+
+
