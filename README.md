@@ -302,7 +302,56 @@ The best model is selected based on highest Weighted F1. When models are close, 
 ---
 
 
+## 6. Model Explainability
+
 ## Model Explainability
+
+We use two complementary explainability tools to ensure stakeholders can **trust and understand** model predictions:
+
+### LIME (Local Interpretable Model-agnostic Explanations)
+- **Package:** `lime`
+- **Scope:** Explains **individual predictions**
+- **Method:** Creates perturbed versions of a tweet (randomly removing words), gets predictions on all versions, and fits a local linear model to identify which words pushed the prediction in each direction
+- **Stakeholder value:** *"This tweet was classified as negative because of 'crash', 'dead', and 'not working'."*
+
+### SHAP (SHapley Additive exPlanations)
+- **Package:** `shap`
+- **Scope:** **Global** feature importance + **local** per-prediction explanations
+- **Method:** Uses Shapley values from cooperative game theory to fairly attribute each feature's contribution to the prediction
+- **Applied to:** Both the best linear model (`LinearExplainer`) and XGBoost (`TreeExplainer` for exact values)
+- **Stakeholder value:** Reveals the top words driving each sentiment class across the entire test set. Comparing SHAP importance across models confirms whether different algorithms learn the same patterns.
+
+### Cross-Model Explainability
+Comparing SHAP feature importance between the linear model and XGBoost reveals:
+- **Same top features** → sentiment signal is robust and consistent across model types
+- **Different top features** → models capture different aspects of the data
+
+---
+
+## Misclassification Analysis
+
+Understanding where the model fails is as important as knowing where it succeeds. The notebook examines:
+
+1. **Error volume:** Total misclassified tweets as a percentage of the test set
+2. **Error breakdown:** Which class pairs are most commonly confused (e.g., neutral predicted as positive)
+3. **Sample review:** Individual misclassified tweets are displayed to identify qualitative patterns
+
+**Common error patterns:**
+- **Neutral ↔ Positive confusion:** Many neutral tweets contain mildly positive language ("just got the new iPad") that doesn't express strong emotion but contains product-positive words
+- **Negative class misses:** The small negative training set (~6%) means the model has fewer examples to learn from
+- **Sarcasm and irony:** Bag-of-words models cannot detect sarcasm — "Great, my iPhone crashed again" contains positive words but negative sentiment
+
+---
+
+## Cross-Validation
+
+5-fold stratified cross-validation on the training set confirms that model performance is **stable and not an artifact of a lucky train/test split**:
+- Fold scores are reported individually
+- Mean F1 and standard deviation are computed
+- Low standard deviation confirms consistent performance across folds
+
+---
+
 
 High-performing models are only useful if stakeholders **trust** them. We use two complementary tools:
 
@@ -313,3 +362,34 @@ High-performing models are only useful if stakeholders **trust** them. We use tw
 |------|-------|--------|----------|
 | **LIME** | Local (single prediction) | Perturbation-based | Explaining to non-technical stakeholders |
 | **SHAP** | Global + Local | Shapley values | Ensuring model learns real patterns, not artifacts |
+
+
+## 7. Conclusions and Stakeholder Recommendations
+
+### What This Means for Each Stakeholder
+
+| Stakeholder | Implication |
+|---|---|
+| **Product Marketing** | The model reliably identifies positive tweets for amplification campaigns and detects negative spikes during launches. Borderline neutral tweets may need manual review for high-stakes campaigns. |
+| **Customer Support** | Negative tweet detection enables proactive issue response. The model's recall on negative tweets determines how many complaints it catches — stakeholders should monitor this metric. |
+| **Product Development** | Top negative-sentiment features from SHAP/LIME directly indicate which product issues are most discussed (e.g., "battery", "crash", "slow"). These can be prioritized in product roadmaps. |
+| **Executive / PR** | Sentiment trends can be tracked over time via dashboards powered by this model. The model provides a reliable, data-driven pulse on brand perception. |
+
+### Key Takeaways
+1. **Linear models (LR, LinearSVC) perform best** on this dataset — the sentiment signal in tweet text is primarily captured by word presence/absence
+2. **SMOTE + class weights** together improve minority class (negative) detection
+3. **TF-IDF with sublinear scaling and trigrams** outperforms word embeddings for this task — exact word matching beats semantic similarity when specific product terms are strong signals
+4. **The model is interpretable** — LIME and SHAP provide transparent explanations for every prediction, enabling stakeholder trust
+
+---
+
+## Limitations
+
+1. **Dataset age** — All tweets are from SXSW 2011. Language, products (iPhone 4, iPad 1), slang, and social media conventions have changed dramatically. The model must be retrained on current data for production use.
+2. **Class imbalance** — Negative tweets represent only ~6% of the data. Even with SMOTE and class weights, the model has fewer real negative examples to learn nuanced patterns from.
+3. **Sarcasm and irony** — TF-IDF and linear models treat words independently. "Great, my phone died again" contains positive words but expresses negative sentiment. This is a fundamental limitation of bag-of-words approaches.
+4. **Event-specific bias** — SXSW is a tech conference with a tech-savvy, enthusiastic audience. Sentiment distributions in everyday Twitter discourse may differ significantly.
+5. **No aspect-level sentiment** — The model classifies overall tweet sentiment, not sentiment toward specific product features (e.g., "love the camera but hate the battery life" is one label).
+6. **Generalizability** — Trained exclusively on Apple and Google product tweets. Performance on tweets about other brands, industries, or topics is unknown without further evaluation.
+7. **Annotation ceiling** — The original dataset contains "I can't tell" labels, indicating that even human annotators found some tweets ambiguous. This places a natural ceiling on achievable model accuracy.
+
