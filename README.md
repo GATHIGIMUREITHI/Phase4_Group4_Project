@@ -135,7 +135,174 @@ Understanding which words the model associates with each class provides interpre
 
 ---
 
-## 5. Model Explainability
+## 5. Modeling Approach
+
+Our modeling follows a strict **iterative, evidence-driven progression**. Each new model is justified by the results of the prior model.
+
+### Evaluation Strategy
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| **Primary metric** | Weighted F1-score | Accuracy is misleading when ~60% of tweets are neutral. A naive "always predict neutral" baseline would score ~60% accuracy. |
+| **Secondary metrics** | Macro F1, Accuracy | Macro F1 treats all classes equally (important for minority negative class). Accuracy is included for reference only. |
+| **Splitting strategy** | 80/20 stratified train/test split | Preserves class proportions in both sets |
+| **Validation** | 5-fold stratified cross-validation | Confirms performance is stable across different data subsets |
+| **Class imbalance** | `class_weight='balanced'` + SMOTE | Upweights minority classes in the loss function; SMOTE generates synthetic minority examples |
+
+### Baseline: Binary Classification
+
+**Model:** Logistic Regression (positive vs. negative tweets only)
+
+**Why start here:**
+- Simplest credible model — validates that the preprocessing and vectorization pipeline works correctly
+- Positive vs. negative is the highest-value distinction for stakeholders
+- Establishes a performance floor that any multiclass model should approach
+
+**Result:** Strong performance, confirming that TF-IDF captures clear sentiment words ("love", "great" vs. "hate", "crash"). Pipeline validated.
+
+**Decision → next step:** Pipeline works. Expand to the full 3-class problem.
+
+---
+
+### Iteration 1: Multiclass Algorithm Comparison
+
+**Models compared (all scikit-learn):**
+
+| Algorithm | Why Selected | Strengths | Weaknesses for This Task |
+|---|---|---|---|
+| Logistic Regression | Strong linear baseline for text | Works well with sparse TF-IDF; interpretable coefficients | Cannot capture non-linear interactions |
+| LinearSVC | SVMs excel on high-dimensional sparse data | Maximum-margin classification; often beats LR on text | No probability estimates by default |
+| Multinomial Naive Bayes | Classic NLP algorithm | Very fast; good with word counts | Assumes feature independence (violated by bigrams) |
+| Random Forest | Non-linear ensemble | Captures feature interactions | Struggles with high-dimensional sparse data |
+
+All models were trained on SMOTE-resampled training data to address class imbalance.
+
+**Key findings:**
+- Logistic Regression and LinearSVC lead — confirming the sentiment signal is **largely linear** in TF-IDF space
+- Random Forest underperforms — high-dimensional sparse features are not ideal for tree splits
+- All models struggle with the negative class due to its small size (~6%)
+
+**Decision → next step:** LR/SVC are best. Tune their hyperparameters along with the TF-IDF vectorizer.
+
+---
+
+### Iteration 2: Hyperparameter Tuning with Pipeline
+
+**Approach:**
+- Wrapped TF-IDF + SMOTE + Classifier in an `imblearn.pipeline.Pipeline`
+- This ensures TF-IDF vocabulary is learned only from training folds and SMOTE is applied only to training data — **no data leakage**
+- Tuned both Logistic Regression and LinearSVC with `GridSearchCV`
+
+**Parameters searched:**
+
+| Parameter | Values Tested | What It Controls |
+|---|---|---|
+| `tfidf__max_features` | 10000, 15000, 20000 | Vocabulary size — more features capture more signal but risk noise |
+| `tfidf__ngram_range` | (1,2), (1,3) | Whether bigrams/trigrams are included |
+| `clf__C` | 0.1, 0.5, 1.0, 5.0, 10.0 | Regularization strength — lower C = more regularization |
+
+**Key findings:**
+- Tuning improved Weighted F1 over the untuned models
+- If bigrams/trigrams were selected, multi-word expressions carry important sentiment signal
+- The best C value reveals how much regularization the data needs — higher C means the features are genuinely informative
+
+**Decision → next step:** Optimized within linear scikit-learn models. Test whether non-linear structure exists using XGBoost from a different package.
+
+---
+
+### Iteration 3: XGBoost (Cross-Package)
+
+**Package:** `xgboost` (gradient boosting framework)
+
+**Why try XGBoost:**
+- Builds sequential decision tree ensembles where each tree corrects prior errors
+- Can capture **non-linear feature interactions** (e.g., "not" + "good" together)
+- Built-in L1/L2 regularization
+- Represents a fundamentally different algorithmic family than linear models
+
+**Tuning:** GridSearchCV over `n_estimators` (200–500), `max_depth` (4–8), `learning_rate` (0.01–0.1), `subsample`, and `colsample_bytree`, with SMOTE in the pipeline.
+
+**Key findings:**
+- If XGBoost matches LR/SVC: the signal is mostly linear → prefer the simpler model (Occam's razor)
+- If XGBoost clearly outperforms: non-linear interactions matter → consider for production
+
+**Decision → next step:** All models so far use TF-IDF (bag-of-words). Test whether semantic understanding helps using spaCy embeddings.
+
+---
+
+### Iteration 4: spaCy Word Embeddings
+
+**Package:** `spacy` with `en_core_web_sm` (96-dimensional pre-trained word vectors)
+
+**Why try embeddings:**
+- TF-IDF treats every word independently — "good" and "great" are unrelated features
+- Word embeddings place semantically similar words close together — "good" ≈ "great" ≈ "excellent"
+- Dense, low-dimensional (96d) vs. sparse, high-dimensional (15000d for TF-IDF)
+- Tests a **fundamentally different text representation** from a different NLP package
+
+**Key findings:**
+- If TF-IDF outperforms embeddings: **exact word presence** matters more than semantic similarity for this dataset — specific words like "love", "crash", "not" are strong, precise signals
+- The small `en_core_web_sm` model has limited embedding quality; larger models (`en_core_web_md`, `en_core_web_lg`) would perform better
+
+**Decision → next step:** Test whether combining TF-IDF with engineered structural features improves performance.
+
+---
+
+### Iteration 5: Combined TF-IDF + Engineered Features
+
+**Approach:** `ColumnTransformer` + `Pipeline` combining:
+1. TF-IDF features (word content)
+2. Engineered features scaled with `StandardScaler`:
+   - Exclamation count, question mark count
+   - Capitalization ratio, all-caps word count
+   - Character length, word count
+   - Hashtag/mention counts
+   - Positive/negative lexicon word counts
+
+**Why:** Structural patterns in tweets (heavy punctuation, ALL CAPS, dense hashtags) may carry sentiment signal that word frequencies alone miss.
+
+**Key findings:**
+- If the combined model improves: structural features carry complementary signal
+- If performance is similar: TF-IDF already captures the signal, but engineered features still add interpretability
+- The pipeline is **production-ready** — serializable as a single object
+
+---
+
+### Iteration 6: Stacked Word + Character N-grams
+
+**Approach:** Stack two TF-IDF matrices:
+- **Word TF-IDF** (1–3 grams, 15000 features)
+- **Character TF-IDF** (2–5 char grams, 10000 features, `analyzer='char_wb'`)
+
+**Why character n-grams help:**
+- Capture morphological patterns and word fragments
+- Robust to misspellings common in tweets ("gr8", "luv", "awsum")
+- Provide sub-word information that word-level TF-IDF misses entirely
+
+Trained with LinearSVC + SMOTE on the stacked 25000-feature matrix.
+
+---
+
+### Complete Model Comparison
+
+All models are compared on the same held-out test set using Weighted F1 (primary), Macro F1, and Accuracy:
+
+| Iteration | Model | Package(s) | Representation | Key Change |
+|---|---|---|---|---|
+| Baseline | Binary LR | scikit-learn | TF-IDF | Validates pipeline |
+| 1 | LR / SVC / NB / RF | scikit-learn | TF-IDF + SMOTE | Compare algorithms |
+| 2 | Tuned LR or SVC | scikit-learn + imblearn | TF-IDF + SMOTE | Hyperparameter optimization |
+| 3 | Tuned XGBoost | xgboost + imblearn | TF-IDF + SMOTE | Non-linear model, different package |
+| 4 | LR + spaCy | spacy + scikit-learn | Word embeddings | Different text representation |
+| 5 | LR + ColumnTransformer | scikit-learn | TF-IDF + Engineered features | Structural tweet patterns |
+| 6 | SVC + Stacked TF-IDF | scikit-learn | Word + Character n-grams | Sub-word information |
+
+The best model is selected based on highest Weighted F1. When models are close, the simpler model is preferred for interpretability and deployment.
+
+---
+
+
+## Model Explainability
 
 High-performing models are only useful if stakeholders **trust** them. We use two complementary tools:
 
