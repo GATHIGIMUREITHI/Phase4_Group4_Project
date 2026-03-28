@@ -1,7 +1,7 @@
 # Phase4_Group4_Project
 
 # Twitter Sentiment Analysis: Apple & Google Products
-## Phase 4 Group 4 Project
+
 
 ---
 
